@@ -5,7 +5,6 @@ Script de Entrenamiento Masivo para OfficeAI
 """
 import sys
 import time
-import random
 sys.path.insert(0, 'src')
 
 from database import Database
