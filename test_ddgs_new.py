@@ -13,11 +13,11 @@ try:
         results = list(ddgs.text("microsoft office", max_results=3))
         
         if results:
-             print(f"✅ Success! Found {len(results)} results.")
-             print(f"Title: {results[0].get('title')}")
-             print(f"URL: {results[0].get('href')}")
+            print(f"✅ Success! Found {len(results)} results.")
+            print(f"Title: {results[0].get('title')}")
+            print(f"URL: {results[0].get('href')}")
         else:
-             print("❌ Failed. Returned empty list.")
+            print("❌ Failed. Returned empty list.")
 
 except Exception as e:
     print(f"❌ Error: {e}")
