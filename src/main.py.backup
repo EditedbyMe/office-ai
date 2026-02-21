@@ -1,0 +1,232 @@
+# -*- coding: utf-8 -*-
+"""
+OfficeAI - Chatbot Inteligente con Búsqueda Web
+Versión Refactorizada 2.0
+"""
+import webbrowser
+
+from config import PERSONALITY, DATA_DIR, DB_PATH
+from database import Database
+from search import WebSearch
+from ai_engine import AIEngine
+from utils import setup_logging, print_banner, print_stats
+
+
+def handle_correction(ai):
+    """Maneja una corrección del usuario"""
+    if not ai.last_question:
+        print(f"\n{PERSONALITY['name']}: No hay pregunta previa para corregir.")
+        return
+    
+    print(f"\n{PERSONALITY['name']}: Lo siento, la respuesta anterior no era correcta.")
+    new_answer = input("Escribe la respuesta correcta:\n").strip()
+    
+    if new_answer:
+        ai.handle_user_correction(new_answer)
+        print(f"{PERSONALITY['name']}: Gracias, he aprendido y lo recordaré.")
+
+
+def handle_single_answer(ai, question, answer):
+    """Maneja una respuesta única"""
+    print(f"\n{PERSONALITY['name']}: {answer}")
+    
+    # Añadir al contexto conversacional
+    ai.add_to_context(question, answer)
+    
+    confirm = input("\n¿Es esta respuesta correcta? (si/no): ").strip().lower()
+    
+    if confirm in ["si", "sí", "s", "yes", "y"]:
+        ai.db.update_q_value(question, answer, +2.0)
+        print(f"{PERSONALITY['name']}: ¡Perfecto! Aumentaré la confianza en esta respuesta.")
+    else:
+        new_answer = input("Escribe la respuesta correcta:\n").strip()
+        if new_answer:
+            ai.handle_user_correction(new_answer, question)
+            return False
+    
+    suggest = input("\n¿Quieres añadir otra respuesta alternativa para esta pregunta? (si/no): ").strip().lower()
+    return suggest in ["si", "sí", "s", "yes", "y"]
+
+
+def handle_multiple_answers(ai, question, answers):
+    """Maneja múltiples respuestas posibles"""
+    print(f"\n{PERSONALITY['name']}: Tengo {len(answers)} respuestas posibles, elige la mejor:")
+    
+    for idx, ans_dict in enumerate(answers, 1):
+        ans = ans_dict['answer']
+        q_value = ans_dict.get('q_value', 0)
+        times = ans_dict.get('times_selected', 0)
+        print(f"{idx}. {ans}")
+        if times > 0:
+            print(f"   (confianza: {q_value:.1f}, usada {times} veces)")
+    
+    choice = input(f"\nElige (1-{len(answers)}) o '0' si ninguna es correcta: ").strip()
+    
+    if choice.isdigit() and 1 <= int(choice) <= len(answers):
+        selected = answers[int(choice)-1]['answer']
+        ai.handle_answer_selection(question, selected, is_correct=True)
+        print(f"\n{PERSONALITY['name']}: Perfecto, usaré esta respuesta más a menudo.")
+        return True
+    else:
+        new_answer = input("Escribe la respuesta correcta:\n").strip()
+        if new_answer:
+            ai.handle_user_correction(new_answer, question)
+            return True
+    
+    return False
+
+
+def handle_web_search(ai, question):
+    """Maneja búsqueda web cuando no hay respuesta local"""
+    print(f"\n{PERSONALITY['name']}: No tengo esa información guardada localmente.")
+    print("Buscando en internet ahora mismo...")
+    
+    results = ai.search_web_and_process(question)
+    
+    if results:
+        print(f"\n{PERSONALITY['name']}: Aquí tienes información actualizada de la web:\n")
+        
+        for i, r in enumerate(results, 1):
+            print(f"{i}. {r['title']}")
+            print(f"   {r['body']}")
+            print(f"   🔗 {r['href']}\n")
+        
+        open_link = input("¿Quieres abrir uno de los enlaces? (1/2/3/4 o no): ").strip()
+        if open_link.isdigit() and 1 <= int(open_link) <= len(results):
+            url = results[int(open_link)-1]['href']
+            webbrowser.open(url)
+            print("Abriendo en tu navegador...")
+        
+        teach = input("\n¿Quieres enseñarme la respuesta correcta para guardarla? (si/no): ").strip().lower()
+        if teach in ["si", "sí", "s", "yes", "y"]:
+            resp = input("Escribe la respuesta que consideras correcta:\n").strip()
+            if resp:
+                topic = ai.get_topic(question)
+                ai.db.add_knowledge(question, resp, topic)
+                ai.db.update_q_value(question, resp, +2.0)
+                ai.db.add_to_history(question, resp, 'user_teach')
+                print(f"{PERSONALITY['name']}: ¡Perfecto! La próxima vez te daré esta respuesta directamente.")
+    else:
+        print(f"{PERSONALITY['name']}: Lo siento, la búsqueda no devolvió resultados útiles.")
+
+
+def show_history(db):
+    """Muestra el historial de conversaciones"""
+    history = db.get_history(limit=20)
+    
+    if not history:
+        print("\nNo hay historial aún.")
+        return
+    
+    print("\n" + "="*80)
+    print("HISTORIAL DE CONVERSACIONES (últimas 20)")
+    print("="*80)
+    
+    for entry in reversed(history):
+        timestamp = entry['timestamp']
+        question = entry['question']
+        answer = entry['answer']
+        source = entry['source']
+        was_correct = entry.get('was_correct')
+        
+        print(f"\n[{timestamp}]")
+        print(f"Tú: {question}")
+        print(f"{PERSONALITY['name']}: {answer}")
+        print(f"Fuente: {source}", end="")
+        
+        if was_correct is not None:
+            status = "✓ Correcta" if was_correct else "✗ Incorrecta"
+            print(f" | {status}")
+        else:
+            print()
+    
+    print("\n" + "="*80)
+
+
+def main():
+    """Función principal del chatbot"""
+    logger = setup_logging()
+    logger.info("Iniciando OfficeAI v2.0")
+    
+    print_banner(PERSONALITY)
+    
+    try:
+        db = Database()
+        web_search = WebSearch(db)
+        ai = AIEngine(db, web_search)
+        
+        logger.info("Componentes inicializados correctamente")
+        print(f"Base de datos: {DB_PATH}")
+        print(f"Conocimiento cargado: {db.get_knowledge_count()} entradas")
+        print("\nComandos especiales:")
+        print("  'salir' - Terminar programa")
+        print("  'historial' - Ver conversaciones anteriores")
+        print("  'stats' - Ver estadísticas del sistema")
+        print("  'export' - Exportar base de datos a JSON")
+        print("="*80)
+        
+    except Exception as e:
+        print(f"ERROR CRÍTICO: No se pudo inicializar el sistema: {e}")
+        logger.error(f"Error de inicialización: {e}")
+        return
+    
+    while True:
+        try:
+            q = input("\nTú: ").strip()
+            
+            if not q:
+                continue
+            
+            if q.lower() == "salir":
+                print(f"\n{PERSONALITY['name']}: ¡Hasta luego! Que tengas un excelente día.")
+                logger.info("Usuario cerró sesión")
+                break
+            
+            if q.lower() == "historial":
+                show_history(db)
+                continue
+            
+            if q.lower() == "stats":
+                print_stats(ai.get_stats())
+                continue
+            
+            if q.lower() == "export":
+                export_path = DATA_DIR / "backup.json"
+                if db.export_to_json(str(export_path)):
+                    print(f"✓ Base de datos exportada a: {export_path}")
+                else:
+                    print("✗ Error al exportar base de datos")
+                continue
+            
+            if ai.is_correction(q) and ai.last_question:
+                handle_correction(ai)
+                continue
+            
+            answer, source = ai.process_question(q)
+            
+            if source == 'local':
+                if handle_single_answer(ai, q, answer):
+                    alt_answer = input("Escribe la respuesta alternativa:\n").strip()
+                    if alt_answer:
+                        ai.add_alternative_answer(q, alt_answer)
+                        print(f"{PERSONALITY['name']}: Alternativa añadida correctamente.")
+            
+            elif source == 'local_multi':
+                handle_multiple_answers(ai, q, answer)
+            
+            elif source == 'unknown':
+                handle_web_search(ai, q)
+            
+        except KeyboardInterrupt:
+            print(f"\n\n{PERSONALITY['name']}: Sesión interrumpida. ¡Hasta pronto!")
+            logger.info("Sesión interrumpida por usuario (Ctrl+C)")
+            break
+        
+        except Exception as e:
+            print(f"\n{PERSONALITY['name']}: Lo siento, ocurrió un error inesperado.")
+            logger.error(f"Error en loop principal: {e}", exc_info=True)
+            continue
+
+
+if __name__ == "__main__":
+    main()

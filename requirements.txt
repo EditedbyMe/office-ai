@@ -1,0 +1,4 @@
+# OfficeAI - Requirements
+google-generativeai
+python-dotenv
+requests
